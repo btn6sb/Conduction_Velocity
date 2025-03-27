@@ -1,0 +1,58 @@
+#!bin/sh
+
+##Fixel pipeline
+
+#uses mrtrix and fsl commands at the command line or wrapped in a loop/script
+#replace commands below with your ${subject} ID and preferred organization
+#This requires a cohort template to be generated using the population_template command from mrtrix3
+#Further requires a WM FOD image (below after mtnormalise has been run) and T1w/T2w ratio (or preferred myelin quantification map)
+
+mkdir -p fod_in_template
+mrregister fod/${subject}_wmnorm.mif ${cohort_template} -nl_niter 1500 -noreorientation -nl_warp warps/${subject}_warp_subject2template.mif warps/${subject}_warp_template2subject.mif -transformed fod_in_template/${subject}_wmfod_noreo.mif -force
+
+rm -R fixel_output/${subject}/
+mkdir -p fixel_output/
+mkdir -p fiber_density/
+fod2fixel fod_in_template/${subject}_wmfod_noreo.mif fixel_output/${subject} -mask ${cohort_template_mask} -peak peaks.mif -dirpeak -afd afd.mif -disp disp.mif
+
+#The next line only needs to be run one time for all subjects
+fod2fixel ${cohort_template} fixel_template/ -mask ${cohort_template_mask} -peak peaks.mif -dirpeak -afd afd.mif -disp disp.mif
+
+fixelreorient fixel_output/${subject}/ warps/${subject}_warp_subject2template.mif fixel_output/${subject} -force
+
+fixelcorrespondence fixel_output/${subject}/afd.mif fixel_template/ fiber_density/ ${subject}_afd.mif -force
+
+rm -R fixel_output_FC/${subject}/
+mkdir -p fixel_output_FC/
+warp2metric warps/${subject}_warp_subject2template.mif -fc fixel_template/ fixel_output_FC/${subject}/ ${subject}_fiber_cross_section.mif -force
+
+mrcalc fixel_output_FC/${subject}/${subject}_fiber_cross_section.mif -log fixel_output_FC/${subject}/${subject}_fiber_cross_section_log.mif -force
+
+cp -v ${subject}_afd.mif fiber_density/${subject}_afd.mif
+
+#As as FDC is normally ranged -1 to 1 this recenters around 1 to enforce positivity
+mrcalc fiber_density/${subject}_afd.mif fixel_output_FC/${subject}/${subject}_fiber_cross_section_log.mif 1 -add -mult fiber_density/${subject}_FDC_weighted.mif -force
+
+#generate voxel-wise g-ratio maps
+#move T1T2 to FDC space
+
+fixel2voxel fiber_density/${subject}_FDC_weighted.mif sum fixel_output/${subject}/FDC_weighted_sum.nii.gz
+
+#as per stikov et al 2015, by Mohammadi & Callaghan 2021 sqrt of 1 - mvf/avf+mvf
+
+fslmaths T1T2_maps/${subject}_T1T2_map_in_template.nii.gz -add fixel_output/${subject}_FDC_weighted_sum.nii.gz ${subject}_MVF_FVF.nii.gz
+fslmaths T1T2_maps/${subject}_T1T2_map_in_template.nii.gz -div ${subject}_MVF_FVF.nii.gz ${subject}_MVF_div_FVF.nii.gz
+
+fslmaths ${subject}_MVF_div_FVF.nii.gz -mul 0 -add 1 ${subject}_1.nii.gz #this is just an easy way to make a voxel-wise map where each voxel has a value of 1 but the grid matches your image
+
+fslmaths ${subject}_1.nii.gz -sub ${subject}_MVF_div_FVF.nii.gz ${subject}_1_sub_MVFAVF.nii.gz
+rm ${subject}_1.nii.gz
+
+fslmaths ${subject}_1_sub_MVFAVF.nii.gz -sqrt gratio/${subject}_gratio.nii.gz
+
+#This cleans up any voxels (typically around the outside of the brain or on the periphery that are not in the brain/have physiologically impossible values from subtracting each voxel from 1 above, you can just remask if you prefer or alter the value
+fslmaths gratio/${subject}_gratio.nii.gz -uthr 0.95 gratio/${subject}_gratio_masked.nii.gz
+
+#calculate conduction velocity from gratio according AVF*sqrt(-ln(gratio)) Ruston via Berman, Filo & Mezer Modeling conduction delays in the corups callosum using MRI-measured g-ratio
+fslmaths gratio/${subject}_gratio_masked.nii.gz -log -mul -1 -sqrt -mul fixel_output/${subject}_FDC_weighted_sum.nii.gz 
+conduction_velocity/${subject}_conduction_velocity.nii.gz
