@@ -1,5 +1,6 @@
 #!bin/sh
 
+#The following is for a single subject without a cohort specific FOD template 
 #uses mrtrix and fsl commands at the command line or wrapped in a loop/script
 #replace commands below with your ${subject} ID and preferred organization
 
